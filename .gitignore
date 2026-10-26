@@ -1,0 +1,21 @@
+# Секреты и локальная конфигурация
+.env
+.env.*
+!.env.example
+
+# Виртуальные окружения Python
+.venv/
+venv/
+env/
+
+# Кэш и скомпилированные файлы Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Инструменты разработки и ОС
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db
