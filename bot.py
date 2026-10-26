@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -293,13 +295,30 @@ def create_anonim_message_command(bot: AnonBot) -> app_commands.Command:
 class AnonBot(commands.Bot):
     """Основной класс Discord-бота для отправки анонимных сообщений."""
 
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(
+        self,
+        config: BotConfig,
+        *,
+        connector: aiohttp.BaseConnector | None = None,
+    ) -> None:
+        # Голосовые каналы ботом не используются — отключаем лишние предупреждения о PyNaCl/davey.
+        discord.VoiceClient.warn_nacl = False
+        if hasattr(discord.VoiceClient, "warn_dave"):
+            discord.VoiceClient.warn_dave = False
+
         intents = discord.Intents.default()
+        extra_options: dict[str, Any] = {}
+        if connector is not None:
+            extra_options["connector"] = connector
+        elif config.proxy_url and config.proxy_url.startswith("http://"):
+            extra_options["proxy"] = config.proxy_url
+
         super().__init__(
             command_prefix=commands.when_mentioned,
             intents=intents,
             help_command=None,
             tree_cls=app_commands.CommandTree,
+            **extra_options,
         )
         self.config: BotConfig = config
         self._commands_synced: bool = False

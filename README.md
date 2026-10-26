@@ -107,6 +107,7 @@ GUILD_ID=123456789012345678
 ANON_CHANNEL_ID=123456789012345679
 PUBLIC_CHANNEL_ID=123456789012345680
 LOG_LEVEL=INFO
+PROXY_URL=
 ```
 
 #### Описание переменных `.env`
@@ -118,6 +119,7 @@ LOG_LEVEL=INFO
 | `ANON_CHANNEL_ID` | Да | ID текстового канала, в котором разрешено вызывать `/anonim_message`. В любых других каналах команда вернёт скрытую ошибку. |
 | `PUBLIC_CHANNEL_ID` | Да | ID общего текстового канала, куда бот отправляет готовые анонимные Embed-сообщения. |
 | `LOG_LEVEL` | Нет | Уровень подробности логов в терминале (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). По умолчанию `INFO`. |
+| `PROXY_URL` | Нет | HTTP- или SOCKS5/SOCKS4-прокси для работы при блокировке Discord провайдером (например, `http://127.0.0.1:2080` или `socks5://127.0.0.1:10808`). Если оставить пустым, бот автоматически подхватывает системный прокси ОС (если он включён). Для принудительного прямого подключения укажите `PROXY_URL=direct`. |
 
 ---
 
@@ -212,6 +214,32 @@ python main.py
 
 ---
 
+## Решение частых сетевых проблем (ошибка `WinError 121` / `Cannot connect to host discord.com:443`)
+
+Если при запуске `python main.py` через 1–1.5 минуты появляется ошибка:
+```text
+OSError: [WinError 121] Превышен таймаут семафора
+aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host discord.com:443 ssl:default
+```
+это означает, что ваш интернет-провайдер блокирует прямое подключение к `discord.com:443`, а трафик `python.exe` не проходит через ваш VPN или прокси.
+
+Как это исправить:
+
+1. **Если у вас запущен VPN/прокси-клиент (Nekoray / Throne, v2rayN, Hiddify, Clash, Sing-box, Outline, Psiphon)**:
+   - Включите в клиенте **«Системный прокси» (System Proxy)** — бот автоматически определит его при старте; **или**
+   - Пропишите локальный адрес прокси явно в файле `.env` (посмотреть порт можно в настройках вашего VPN-клиента):
+     - **Nekoray / Throne**: `PROXY_URL=http://127.0.0.1:2080` или `PROXY_URL=socks5://127.0.0.1:2080`
+     - **v2rayN**: `PROXY_URL=http://127.0.0.1:10809` или `PROXY_URL=socks5://127.0.0.1:10808`
+     - **Hiddify**: `PROXY_URL=http://127.0.0.1:12334` или `PROXY_URL=socks5://127.0.0.1:12334`
+     - **Clash / Clash Verge / Mihomo**: `PROXY_URL=http://127.0.0.1:7890`
+   - При использовании `socks5://` обновите зависимости в `.venv`: `pip install -r requirements.txt`.
+2. **Если вы используете раздельное туннелирование по приложениям (AmneziaVPN, WireGuard, TUN-режим)**:
+   - По умолчанию в список туннелирования часто добавлен только `Discord.exe`. Добавьте туда исполняемый файл Python из вашего окружения (`.venv\Scripts\python.exe`) либо включите туннелирование для всего трафика.
+3. **Если вы используете Zapret (`zapret-discord-youtube`)**:
+   - Батники вида `discord.bat` иногда обрабатывают только голосовые порты или не все IP-адреса Cloudflare/API `discord.com`. Запустите профиль **`general.bat`** (или `general (ALT...).bat`) от имени администратора.
+
+---
+
 ## Структура проекта
 
 ```text
@@ -220,7 +248,7 @@ python main.py
 ├── .gitignore        # Исключения Git (.env, .venv, __pycache__, *.pyc)
 ├── README.md         # Подробная документация по настройке и запуску
 ├── bot.py            # Класс бота, синхронизация команд и обработчик /anonim_message
-├── config.py         # Чтение и строгая валидация переменных окружения
+├── config.py         # Чтение и строгая валидация переменных окружения (включая прокси)
 ├── main.py           # Точка входа и настройка логирования в stdout
-└── requirements.txt  # Зависимости проекта (discord.py 2.x, python-dotenv)
+└── requirements.txt  # Зависимости проекта (discord.py 2.x, python-dotenv, aiohttp-socks)
 ```

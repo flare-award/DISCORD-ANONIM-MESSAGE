@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
@@ -25,6 +27,20 @@ PLACEHOLDER_TOKENS: frozenset[str] = frozenset(
     }
 )
 
+DIRECT_PROXY_VALUES: frozenset[str] = frozenset(
+    {"direct", "none", "off", "false", "0"}
+)
+
+PROXY_SCHEME_MAP: dict[str, str] = {
+    "http": "http",
+    "https": "http",
+    "socks5": "socks5",
+    "socks5h": "socks5",
+    "socks": "socks5",
+    "socks4": "socks4",
+    "socks4a": "socks4",
+}
+
 
 class ConfigError(ValueError):
     """Исключение, выбрасываемое при некорректной или неполной конфигурации."""
@@ -34,8 +50,8 @@ class ConfigError(ValueError):
 class BotConfig:
     """Проверенная конфигурация бота.
 
-    Поле ``discord_token`` исключено из ``repr``, чтобы токен никогда случайно
-    не попал в логи или отладочный вывод.
+    Поля ``discord_token`` и ``proxy_url`` исключены из ``repr``, чтобы секреты
+    и учётные данные прокси никогда случайно не попали в логи или отладочный вывод.
     """
 
     discord_token: str = field(repr=False)
@@ -43,11 +59,122 @@ class BotConfig:
     anon_channel_id: int
     public_channel_id: int
     log_level: str = "INFO"
+    proxy_url: str | None = field(default=None, repr=False)
+    proxy_source: str = "прямое подключение"
 
     @property
     def log_level_int(self) -> int:
         """Возвращает числовой уровень логирования для модуля ``logging``."""
         return int(getattr(logging, self.log_level))
+
+    @property
+    def masked_proxy_display(self) -> str:
+        """Возвращает безопасное строковое описание режима подключения без паролей."""
+        if not self.proxy_url:
+            return self.proxy_source
+        return f"{mask_proxy_url(self.proxy_url)} ({self.proxy_source})"
+
+
+def mask_proxy_url(proxy_url: str) -> str:
+    """Скрывает логин и пароль из URL прокси перед выводом в логи."""
+    parsed = urlsplit(proxy_url)
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    host_port = f"{host}:{parsed.port}" if parsed.port else host
+    if parsed.username is not None or parsed.password is not None:
+        netloc = f"***@{host_port}"
+    else:
+        netloc = host_port
+    return urlunsplit((parsed.scheme, netloc, "", "", ""))
+
+
+def normalize_proxy_url(raw_url: str, *, var_name: str = "PROXY_URL") -> str:
+    """Нормализует и проверяет URL прокси (HTTP, SOCKS5, SOCKS4)."""
+    candidate = raw_url.strip()
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+
+    parsed = urlsplit(candidate)
+    raw_scheme = parsed.scheme.lower()
+    normalized_scheme = PROXY_SCHEME_MAP.get(raw_scheme)
+    if normalized_scheme is None:
+        raise ConfigError(
+            f"Переменная {var_name} содержит неподдерживаемую схему {raw_scheme!r}. "
+            "Используйте http://host:port, socks5://host:port или socks4://host:port."
+        )
+
+    host = parsed.hostname
+    if not host:
+        raise ConfigError(
+            f"В переменной {var_name} не указан хост прокси "
+            "(пример: http://127.0.0.1:2080 или socks5://127.0.0.1:10808)."
+        )
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ConfigError(
+            f"В переменной {var_name} указан некорректный порт прокси."
+        ) from exc
+
+    if port is None or not (1 <= port <= 65535):
+        raise ConfigError(
+            f"В переменной {var_name} обязательно укажите порт от 1 до 65535 "
+            "(например, http://127.0.0.1:2080)."
+        )
+
+    formatted_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    auth_prefix = ""
+    if parsed.username is not None:
+        if parsed.password is not None:
+            auth_prefix = f"{parsed.username}:{parsed.password}@"
+        else:
+            auth_prefix = f"{parsed.username}@"
+
+    netloc = f"{auth_prefix}{formatted_host}:{port}"
+    return urlunsplit((normalized_scheme, netloc, "", "", ""))
+
+
+def _detect_system_proxy(environ: Mapping[str, str] | None) -> tuple[str | None, str]:
+    """Определяет прокси из переменных окружения или системных настроек ОС (Windows/macOS/Linux)."""
+    env_keys = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy")
+    source = environ if environ is not None else os.environ
+
+    for key in env_keys:
+        val = (source.get(key) or "").strip()
+        if val:
+            try:
+                return normalize_proxy_url(val, var_name=key), f"из окружения {key}"
+            except ConfigError:
+                continue
+
+    if environ is not None:
+        return None, "прямое подключение"
+
+    try:
+        sys_proxies = urllib.request.getproxies()
+    except Exception:
+        return None, "прямое подключение"
+
+    raw_socks = (sys_proxies.get("socks") or "").strip()
+    raw_https = (sys_proxies.get("https") or "").strip()
+    raw_http = (sys_proxies.get("http") or "").strip()
+    raw_all = (sys_proxies.get("all") or "").strip()
+
+    # В Windows реестр при socks=127.0.0.1:port подставляет socks4:// в https/http;
+    # современные локальные клиенты (v2rayN, Nekoray, Clash и др.) работают по SOCKS5.
+    chosen = raw_https or raw_http or raw_all or raw_socks
+    if raw_socks and chosen.startswith("socks4://") and raw_socks.startswith("socks://"):
+        chosen = "socks5://" + raw_socks.removeprefix("socks://")
+
+    if not chosen:
+        return None, "прямое подключение"
+
+    try:
+        return normalize_proxy_url(chosen, var_name="SYSTEM_PROXY"), "системный прокси ОС"
+    except ConfigError:
+        return None, "прямое подключение"
 
 
 def _parse_discord_id(
@@ -154,6 +281,22 @@ def load_config(
         )
         log_level = "INFO"
 
+    proxy_url: str | None = None
+    proxy_source: str = "прямое подключение"
+    raw_proxy = (source.get("PROXY_URL") or "").strip()
+    if raw_proxy:
+        if raw_proxy.lower() in DIRECT_PROXY_VALUES:
+            proxy_url = None
+            proxy_source = "прямое подключение (PROXY_URL=direct)"
+        else:
+            try:
+                proxy_url = normalize_proxy_url(raw_proxy, var_name="PROXY_URL")
+                proxy_source = "из PROXY_URL"
+            except ConfigError as exc:
+                errors.append(str(exc))
+    else:
+        proxy_url, proxy_source = _detect_system_proxy(environ)
+
     if errors:
         hint = ""
         if environ is None and env_path is not None and not env_path.is_file():
@@ -175,4 +318,6 @@ def load_config(
         anon_channel_id=anon_channel_id,
         public_channel_id=public_channel_id,
         log_level=log_level,
+        proxy_url=proxy_url,
+        proxy_source=proxy_source,
     )
